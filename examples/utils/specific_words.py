@@ -1,7 +1,9 @@
 import numpy as np
 from flair.data import Sentence
-from flair.embeddings import WordEmbeddings
+from flair.embeddings import WordEmbeddings, DocumentPoolEmbeddings
 from sklearn.feature_extraction.text import TfidfVectorizer
+import pickle
+import os
 
 from .word_enrichment import hypergeom_p_values
 
@@ -126,6 +128,35 @@ def find_cluster_words(doc_embs, words, word_embs, cluster_labels):
     return cluster_describer
 
 
+def find_specific_with_pos(tokens, pos_document_embedding=False):
+    # POS tags
+    path = os.path.join(os.path.dirname(__file__), 'sl-tagger.pickle')
+    tagger = pickle.load(open(path, 'rb'))
+    tags = tagger.tag(tokens)
+    filtered_tags = [t[0] for t in tags if t[1][0] in ['S', 'P']]
+    candidates = np.unique([t[0] for t in tags if t[1][0] == 'S'])
+
+    # embedding
+    doc_embedder = DocumentPoolEmbeddings([WordEmbeddings('sl')], pooling='mean')
+    if pos_document_embedding:
+        doc_sent = Sentence(" ".join(filtered_tags))
+    else:
+        doc_sent = Sentence(" ".join(tokens))
+    doc_embedder.embed(doc_sent)
+    doc_emb = doc_sent.embedding.cpu().detach().numpy()
+    embs = list()
+    for candidate in candidates:
+        sent = Sentence(candidate)
+        doc_embedder.embed(sent)
+        embs.append(sent.embedding.cpu().detach().numpy())
+
+    # ranking
+    distances = [1 - cos_sim(doc_emb, emb) for emb in embs]
+    ranked = [(candidates[i], 1 - distances[i]) for i in np.argsort(distances)]
+
+    return ranked
+
+
 def embedding_corpus_words(tokens_list):
     doc_embs, words, word_embs, _, _ = prepare_data(tokens_list)
     return find_corpus_words(doc_embs, words, word_embs)
@@ -135,6 +166,11 @@ def embedding_document_words(tokens_list):
     doc_embs, words, word_embs, word2doc, doc2word = prepare_data(tokens_list)
     return find_document_words(doc_embs, words, word_embs, word2doc,
                                doc2word)
+
+
+def embedding_pos_words(tokens_list, pos_document_embedding=False):
+    return [find_specific_with_pos(tokens, pos_document_embedding=pos_document_embedding)
+            for tokens in tokens_list]
 
 
 def enrichment_words(tokens_list):
